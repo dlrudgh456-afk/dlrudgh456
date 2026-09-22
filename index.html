@@ -1,4 +1,3 @@
-```html
 <!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -33,7 +32,7 @@
         }
     </style>
 </head>
-<body class="text-slate-800 antialiased min-h-screen flex flex-col pb-safe">
+<body onload="hideMarkdownFences()" class="text-slate-800 antialiased min-h-screen flex flex-col pb-safe">
 
     <!-- Header -->
     <header class="bg-white border-b border-slate-100 sticky top-0 z-40 shadow-sm safe-top">
@@ -110,7 +109,7 @@
 
         <!-- Favorites & Recents Panel -->
         <div class="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
-            <div class="flex border-b border-slate-100 mb-3">
+<div class="flex border-b border-slate-100 mb-3">
                 <button onclick="switchTab('favorites')" id="tabBtnFavorites" class="touch-target flex-1 pb-2 text-xs font-bold text-blue-600 border-b-2 border-blue-600">
                     <i class="fa-solid fa-star mr-1"></i> 즐겨찾기
                 </button>
@@ -185,6 +184,42 @@
                             <span class="text-slate-400 block font-semibold">최근 확인</span>
                             <span id="resLastUpdate" class="text-slate-700 font-medium">--:--</span>
                         </div>
+                    </div>
+                </div>
+
+                <!-- Detailed Current Status -->
+                <div class="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
+                    <div class="flex items-center justify-between mb-3">
+                        <h4 class="text-xs font-bold text-slate-800">
+                            <i class="fa-solid fa-circle-info text-blue-500 mr-1"></i> 현재 배송 상세
+                        </h4>
+                        <span id="resStatusBadge" class="text-[9px] font-bold px-2 py-1 rounded-full bg-blue-50 text-blue-600">-</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2">
+                        <div class="rounded-xl bg-slate-50 p-2.5">
+                            <span class="text-[9px] text-slate-400 block">현재 위치</span>
+                            <span id="resCurrentLocation" class="text-[10px] font-bold text-slate-700 block mt-0.5">-</span>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 p-2.5">
+                            <span class="text-[9px] text-slate-400 block">최근 처리 시각</span>
+                            <span id="resLastDateTime" class="text-[10px] font-bold text-slate-700 block mt-0.5">-</span>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 p-2.5">
+                            <span class="text-[9px] text-slate-400 block">배송 상태 코드</span>
+                            <span id="resStatusCode" class="text-[10px] font-mono font-bold text-slate-700 block mt-0.5">-</span>
+                        </div>
+                        <div class="rounded-xl bg-slate-50 p-2.5">
+                            <span class="text-[9px] text-slate-400 block">총 처리 건수</span>
+                            <span id="resProgressCount" class="text-[10px] font-bold text-slate-700 block mt-0.5">0건</span>
+                        </div>
+                    </div>
+                    <div class="mt-2 rounded-xl bg-slate-50 p-2.5">
+                        <span class="text-[9px] text-slate-400 block">최근 배송 메시지</span>
+                        <p id="resLatestDescription" class="text-[10px] leading-relaxed text-slate-700 mt-0.5">-</p>
+                    </div>
+                    <div id="resEtaRow" class="hidden mt-2 rounded-xl bg-emerald-50 border border-emerald-100 p-2.5">
+                        <span class="text-[9px] text-emerald-600 block">예상 배송 정보</span>
+                        <span id="resEtaText" class="text-[10px] font-bold text-emerald-700 block mt-0.5">-</span>
                     </div>
                 </div>
 
@@ -277,6 +312,17 @@
 
     <!-- Script Implementation -->
     <script>
+        // 일부 HTML 미리보기 환경에서 Markdown 코드펜스가 화면에 노출되는 경우 제거
+        function hideMarkdownFences() {
+            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+            const nodes = [];
+            while (walker.nextNode()) nodes.push(walker.currentNode);
+            nodes.forEach(node => {
+                if (node.nodeValue && (node.nodeValue.trim() === '```html' || node.nodeValue.trim() === '```')) {
+                    node.remove();
+                }
+            });
+        }
         const DEMO_API_KEY = "pk_demo_002_do_not_use_in_production";
         const DEMO_SECRET_KEY = "sk_demo_002_do_not_use_in_production";
 
@@ -285,10 +331,14 @@
         let currentCourier = '';
         let currentTracking = '';
         let currentMemo = '';
-
-        window.addEventListener('DOMContentLoaded', () => {
+        const NOTIFICATION_STATE_KEY = 'delivery_notification_state_v2';
+window.addEventListener('DOMContentLoaded', () => {
             initCredentials();
             renderList();
+            initNotificationUI();
+            isAutoMonitorEnabled = localStorage.getItem(MONITOR_SETTING_KEY) !== 'false';
+            updateMonitorUI();
+            if (isAutoMonitorEnabled) startAutoMonitor();
         });
 
         function initCredentials() {
@@ -391,6 +441,19 @@
 
                 if (res.isSuccess && res.data?.results?.[0]?.success) {
                     const trackingData = res.data.results[0].data;
+
+                    // 즐겨찾기인 경우, 사용자가 직접 조회했을 때 이전 상태와 비교해 변경 알림
+                    const fav = getFavs().find(f => f.courier === courier && f.tracking === tracking);
+                    if (fav && fav.lastProgressTime) {
+                        const latest = getLatestProgress(trackingData);
+                        const oldKey = `${fav.statusCode || ''}|${fav.statusText || ''}|${fav.lastProgressTime || ''}`;
+                        const newStatus = trackingData.deliveryStatusText || '배송중';
+                        const newKey = `${trackingData.deliveryStatus || ''}|${newStatus}|${latest?.dateTime || trackingData.dateLastProgress || ''}`;
+                        if (oldKey !== newKey) {
+                            notifyStatusChange(fav, fav.statusText || fav.statusCode || '이전 상태', newStatus, latest?.description || '');
+                        }
+                    }
+
                     displayResult(trackingData, memo);
                     saveRecent(courier, tracking, trackingData.courierName, trackingData.deliveryStatusText, memo);
                 } else {
@@ -420,7 +483,26 @@
             document.getElementById('resTrackingNum').innerText = data.trackingNumber;
             document.getElementById('resMemo').innerText = memo ? `메모: ${memo}` : '메모: -';
             document.getElementById('resStatusText').innerText = data.deliveryStatusText || '배송중';
-            document.getElementById('resLastUpdate').innerText = data.dateLastProgress ? data.dateLastProgress.split('T')[1]?.substring(0, 5) || '--:--' : '--:--';
+            document.getElementById('resLastUpdate').innerText = formatDateTime(data.dateLastProgress);
+
+            const latest = getLatestProgress(data);
+            document.getElementById('resStatusBadge').innerText = data.deliveryStatusText || data.deliveryStatus || '배송중';
+            document.getElementById('resCurrentLocation').innerText = latest?.location || data.currentLocation || '정보 없음';
+            document.getElementById('resLastDateTime').innerText = formatDateTime(latest?.dateTime || data.dateLastProgress);
+            document.getElementById('resStatusCode').innerText = data.deliveryStatus || '정보 없음';
+            document.getElementById('resProgressCount').innerText = `${(data.progresses || []).length}건`;
+            document.getElementById('resLatestDescription').innerText = latest?.description || data.deliveryStatusText || '상세 메시지가 없습니다.';
+
+            const eta = data.estimatedDeliveryDate || data.expectedDeliveryDate || data.eta;
+            if (eta) {
+                document.getElementById('resEtaRow').classList.remove('hidden');
+                document.getElementById('resEtaText').innerText = formatDateTime(eta);
+            } else {
+                document.getElementById('resEtaRow').classList.add('hidden');
+            }
+
+            // 즐겨찾기 항목에 마지막 확인 상태를 저장하고 변경 여부를 검사
+            updateFavoriteSnapshot(data, memo);
 
             // Update Progress UI
             updateProgress(data.deliveryStatus);
@@ -488,6 +570,118 @@
             }
         }
 
+        // ----------------- DETAIL / NOTIFICATION -----------------
+        function getLatestProgress(data) {
+            const history = data?.progresses || [];
+            if (!history.length) return null;
+            return history.reduce((latest, item) => {
+                if (!latest) return item;
+                const a = new Date(latest.dateTime).getTime();
+                const b = new Date(item.dateTime).getTime();
+                return isNaN(b) || (!isNaN(a) && a >= b) ? latest : item;
+            }, null);
+        }
+
+        function formatDateTime(value) {
+            if (!value) return '-';
+            const d = new Date(value);
+            if (isNaN(d.getTime())) return String(value);
+            return d.toLocaleString('ko-KR', {
+                month: 'numeric', day: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+        }
+
+        function getNotificationState() {
+            try { return JSON.parse(localStorage.getItem(NOTIFICATION_STATE_KEY)) || {}; }
+            catch (_) { return {}; }
+        }
+
+        function setNotificationState(state) {
+            localStorage.setItem(NOTIFICATION_STATE_KEY, JSON.stringify(state));
+        }
+
+        function initNotificationUI() {
+            const btn = document.getElementById('notificationBtn');
+            if (!('Notification' in window)) {
+                btn.innerText = '브라우저 미지원';
+                btn.disabled = true;
+                btn.classList.add('opacity-50');
+                return;
+            }
+            if (Notification.permission === 'granted') {
+                btn.innerText = '알림 허용됨';
+                btn.classList.add('text-emerald-700', 'border-emerald-200');
+            } else if (Notification.permission === 'denied') {
+                btn.innerText = '알림 차단됨';
+            }
+        }
+
+        async function requestNotificationPermission() {
+            if (!('Notification' in window)) {
+                showToast('이 브라우저는 알림 기능을 지원하지 않습니다.');
+                return;
+            }
+            try {
+                const permission = await Notification.requestPermission();
+                initNotificationUI();
+                if (permission === 'granted') {
+                    showToast('배송 상태 변경 알림이 활성화되었습니다.');
+                    new Notification('DeliveryAPI Tracker', {
+                        body: '즐겨찾기 배송품의 상태 변경을 알려드립니다.',
+                        icon: 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/svgs/solid/truck-fast.svg'
+                    });
+                } else {
+                    showToast('브라우저 알림 권한이 허용되지 않았습니다.');
+                }
+            } catch (_) {
+                showToast('알림 권한을 요청할 수 없습니다.');
+            }
+        }
+
+        function notifyStatusChange(item, oldStatus, newStatus, detail) {
+            const title = `${item.courierName || '택배'} 배송 상태 변경`;
+            const body = `${item.memo ? item.memo + ' · ' : ''}${oldStatus || '이전 상태'} → ${newStatus || '변경됨'}${detail ? `\n${detail}` : ''}`;
+            showToast(body.replace('\n', ' '));
+
+            if ('Notification' in window && Notification.permission === 'granted') {
+                try {
+                    new Notification(title, {
+                        body,
+                        tag: `delivery-${item.courier}-${item.tracking}`,
+                        renotify: true
+                    });
+                } catch (_) {}
+            }
+        }
+
+        function updateFavoriteSnapshot(data, memo) {
+            const favs = getFavs();
+            const index = favs.findIndex(f => f.courier === data.courierCode && f.tracking === data.trackingNumber);
+            if (index < 0) return;
+
+            const latest = getLatestProgress(data);
+            const old = favs[index];
+            const oldKey = `${old.statusCode || ''}|${old.statusText || ''}|${old.lastProgressTime || ''}`;
+            const newStatus = data.deliveryStatusText || '배송중';
+            const newKey = `${data.deliveryStatus || ''}|${newStatus}|${latest?.dateTime || data.dateLastProgress || ''}`;
+
+            favs[index] = {
+                ...old,
+                courierName: data.courierName || old.courierName,
+                statusText: newStatus,
+                statusCode: data.deliveryStatus || old.statusCode || '',
+                location: latest?.location || old.location || '',
+                lastDescription: latest?.description || old.lastDescription || '',
+                lastProgressTime: latest?.dateTime || data.dateLastProgress || old.lastProgressTime || '',
+                lastCheckedAt: new Date().toISOString(),
+                memo: memo ?? old.memo
+            };
+
+            localStorage.setItem('m_fav', JSON.stringify(favs));
+            if (activeTab === 'favorites') renderList();
+        }
+
         // ----------------- STORAGE -----------------
         function getFavs() { return JSON.parse(localStorage.getItem('m_fav')) || []; }
         function getRecs() { return JSON.parse(localStorage.getItem('m_rec')) || []; }
@@ -505,8 +699,14 @@
                     courier: currentCourier,
                     courierName: currentSearchData.courierName,
                     tracking: currentTracking,
-                    statusText: currentSearchData.deliveryStatusText,
-                    memo: currentMemo
+                    statusText: currentSearchData.deliveryStatusText || '배송중',
+                    statusCode: currentSearchData.deliveryStatus || '',
+                    location: getLatestProgress(currentSearchData)?.location || '',
+                    lastDescription: getLatestProgress(currentSearchData)?.description || '',
+                    lastProgressTime: getLatestProgress(currentSearchData)?.dateTime || '',
+                    lastCheckedAt: new Date().toISOString(),
+                    memo: currentMemo,
+                    notify: true
                 });
                 showToast("즐겨찾기에 등록되었습니다.");
             }
@@ -562,6 +762,10 @@
                                 ${item.memo ? `<span class="text-[10px] text-slate-700 font-bold truncate max-w-[80px]">${item.memo}</span>` : ''}
                             </div>
                             <span class="text-[10px] text-slate-500 font-mono tracking-wide block mt-0.5">${item.tracking}</span>
+                            <div class="flex items-center gap-1 mt-1">
+                                <span class="text-[9px] font-bold text-blue-600 truncate max-w-[125px]">${item.statusText || '상태 미확인'}</span>
+                                ${item.location ? `<span class="text-[8px] text-slate-400 truncate max-w-[90px]">· ${item.location}</span>` : ''}
+                            </div>
                         </div>
                         <button onclick="deleteItem(event, '${item.courier}', '${item.tracking}')" class="touch-target w-7 h-7 flex items-center justify-center text-slate-400 hover:text-rose-500">
                             <i class="fa-solid fa-xmark text-xs"></i>
@@ -578,7 +782,6 @@
             document.getElementById('memoInput').value = memo;
             performTracking(courier, tracking, memo);
         }
-
         function copyTrackingNumber() {
             if (!currentTracking) return;
             const temp = document.createElement("input");
@@ -592,5 +795,3 @@
     </script>
 </body>
 </html>
-
-```
